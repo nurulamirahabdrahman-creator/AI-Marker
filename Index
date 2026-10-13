@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MPT4 AI Smart Marker</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            navy: '#1E3A8A',
+                            royal: '#3B82F6',
+                            primary: '#0EA5E9',
+                            secondary: '#FBBF24',
+                            accent: '#EC4899',
+                            sky: '#E0F2FE',
+                            mint: '#D1FAE5',
+                            paper: '#FDFBF7'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Nunito', 'sans-serif'],
+                    },
+                    animation: {
+                        'scan-line': 'scan 2s cubic-bezier(0.4, 0, 0.2, 1) infinite',
+                        'pulse-glow': 'glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    },
+                    keyframes: {
+                        scan: {
+                            '0%': { top: '0%' },
+                            '50%': { top: '100%' },
+                            '100%': { top: '0%' }
+                        },
+                        glow: {
+                            '0%, 100%': { opacity: 1 },
+                            '50%': { opacity: .5 }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'mpt4-ai-marker';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        
+        if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
+            const app = initializeApp(firebaseConfig);
+            window.fbDb = getFirestore(app);
+            window.fbAuth = getAuth(app);
+            window.appId = appId;
+            window.fbFunctions = { collection, addDoc, onSnapshot };
+
+            const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+            if (token) {
+                signInWithCustomToken(window.fbAuth, token).catch(e => console.error("Auth error:", e));
+            } else {
+                signInAnonymously(window.fbAuth).catch(e => console.error("Auth error:", e));
+            }
+        }
+    </script>
+
+    <style>
+        body { font-family: 'Nunito', sans-serif; background-color: #F0F9FF; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Playful dotted background pattern */
+        .bg-dots {
+            background-color: #F0F9FF;
+            background-image: radial-gradient(#bae6fd 2px, transparent 2px);
+            background-size: 30px 30px;
+        }
+
+        /* Annotation Layer Styles */
+        .annotation-marker {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            cursor: pointer;
+            user-select: none;
+            z-index: 10;
+            transition: transform 0.1s;
+        }
+        .annotation-marker:hover {
+            transform: translate(-50%, -50%) scale(1.2);
+        }
+        
+        /* Red Pen Effect */
+        .red-pen {
+            font-family: 'Caveat', cursive;
+            color: #DC2626; /* Red-600 */
+            font-weight: 700;
+            font-size: 2.5rem;
+            line-height: 1;
+            text-shadow: 1px 1px 0px rgba(255,255,255,0.8), -1px -1px 0px rgba(255,255,255,0.8);
+            filter: drop-shadow(0px 2px 2px rgba(220, 38, 38, 0.3));
+        }
+        
+        .symbol-correct { color: #16A34A; } /* Green for correct */
+        
+        .scan-container { position: relative; display: inline-block; max-width: 100%; }
+        .scan-image { max-width: 100%; height: auto; display: block; border-radius: 0.5rem; }
+        
+        /* Laser Scanner Line */
+        .laser-line {
+            position: absolute;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: rgba(14, 165, 233, 0.8);
+            box-shadow: 0 0 15px 5px rgba(14, 165, 233, 0.5);
+            z-index: 20;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        const EXAM_SCHEME = {
+            subject: "English", paperCode: "043", maxMarks: 15,
+            parts: [
+                { id: 6, name: "Part 6: Guided Writing", maxMarks: 15, type: "rubric", questions: [34], 
+                  rubric: ["Idea", "Structural Control", "Vocabulary", "Punctuation", "Grammar"] }
+            ]
+        };
+
+        const MARKING_SYMBOLS = [
+            { symbol: '✓', name: 'Correct / Merit', color: 'symbol-correct' },
+            { symbol: '^', name: 'Missing word', color: 'red-pen' },
+            { symbol: '___', name: 'Structure error', color: 'red-pen' },
+            { symbol: '~~~', name: 'Grammar error', color: 'red-pen' },
+            { symbol: 'Sp', name: 'Spelling mistake', color: 'red-pen' },
+            { symbol: 'O', name: 'Punctuation', color: 'red-pen' },
+            { symbol: 'V', name: 'Vocabulary', color: 'red-pen' },
+            { symbol: 'R', name: 'Repetition', color: 'red-pen' },
+            { symbol: '?', name: 'Unclear meaning', color: 'red-pen' },
+            { symbol: '//', name: 'Total distortion', color: 'red-pen' },
+            { symbol: 'Rd', name: 'Redundancy', color: 'red-pen' },
+            { symbol: '[ ]', name: 'Irrelevancy', color: 'red-pen' },
+            { symbol: '( )', name: 'Chunking', color: 'red-pen' },
+            { symbol: '↔', name: 'Word order', color: 'red-pen' },
+            { symbol: '/', name: 'Separate words', color: 'red-pen' }
+        ];
+
+        const getCEFRLevel = (marks) => {
+            if (marks >= 13) return { level: "A2", desc: "Excellent", color: "text-green-600 bg-green-100" };
+            if (marks >= 10) return { level: "A1 High", desc: "Good", color: "text-blue-600 bg-blue-100" };
+            if (marks >= 7) return { level: "A1 Mid", desc: "Satisfactory", color: "text-amber-600 bg-amber-100" };
+            if (marks >= 4) return { level: "A1 Low", desc: "Basic", color: "text-orange-600 bg-orange-100" };
+            return { level: "Pre-A1", desc: "Needs Support", color: "text-red-600 bg-red-100" };
+        };
+
+        function Layout({ user, children, activeTab, setActiveTab, onLogout }) {
+            const navItems = [
+                { id: 'scan', icon: 'fa-camera', label: 'Scan Part 6' },
+                { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' }
+            ];
+
+            return (
+                <div className="flex h-screen bg-dots overflow-hidden">
+                    <aside className="w-72 bg-white text-gray-800 flex flex-col shadow-2xl z-20 hidden md:flex border-r-2 border-brand-sky relative">
+                        <div className="p-6 border-b-2 border-gray-100 flex flex-col items-center text-center">
+                            <div className="bg-white p-2 rounded-full inline-block shadow-sm mb-3 border-2 border-brand-sky">
+                                <img 
+                                    src="https://iili.io/nVTduKg.png" 
+                                    onError={(e) => { e.target.onerror = null; e.target.src = 'https://placehold.co/100x100/F0F9FF/3B82F6?text=SK+Tawau'; }}
+                                    alt="Logo" 
+                                    className="w-16 h-16 object-contain"
+                                />
+                            </div>
+                            <h2 className="text-xl font-extrabold text-brand-navy">AI Marker</h2>
+                            <span className="bg-brand-secondary text-brand-navy text-[10px] font-black px-3 py-1 rounded-full mt-2 uppercase tracking-wide">MPT4 English • Part 6</span>
+                        </div>
+                        <nav className="flex-1 p-4 space-y-2">
+                            {navItems.map(item => (
+                                <button key={item.id} onClick={() => setActiveTab(item.id)}
+                                    className={`w-full flex items-center space-x-4 px-5 py-4 rounded-2xl transition-all font-bold ${activeTab === item.id ? 'bg-brand-primary text-white shadow-md transform scale-[1.02]' : 'text-gray-500 hover:bg-gray-50 hover:text-brand-primary'}`}>
+                                    <i className={`fas ${item.icon} text-lg w-6`}></i>
+                                    <span>{item.label}</span>
+                                </button>
+                            ))}
+                        </nav>
+                        
+                        <div className="p-4 mt-auto mb-2">
+                            <button onClick={onLogout} className="w-full flex items-center justify-center space-x-2 px-5 py-3 rounded-2xl transition-all font-bold text-red-500 hover:bg-red-50 hover:text-red-600 border border-transparent hover:border-red-100">
+                                <i className="fas fa-sign-out-alt"></i>
+                                <span>Log Out</span>
+                            </button>
+                        </div>
+
+                        <div className="p-4 border-t-2 border-gray-100 bg-gray-50 m-4 rounded-3xl mt-0">
+                            <div className="flex items-center space-x-3">
+                                <div className="w-12 h-12 rounded-full bg-brand-sky text-brand-primary flex items-center justify-center font-extrabold text-xl shadow-inner uppercase">
+                                    {user.name.charAt(0)}
+                                </div>
+                                <div className="text-left">
+                                    <p className="text-sm font-extrabold text-brand-navy truncate w-40">{user.name}</p>
+                                    <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide truncate w-40">{user.school}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+
+                    <main className="flex-1 overflow-y-auto relative">
+                        {children}
+                    </main>
+                </div>
+            );
+        }
+
+        function ScannerView({ onScanComplete }) {
+            const [isDragging, setIsDragging] = useState(false);
+            const [previewImage, setPreviewImage] = useState(null);
+            const [scanStatus, setScanStatus] = useState('');
+
+            const handleFile = (file) => {
+                if (!file || !file.type.startsWith('image/')) {
+                    console.warn("Please upload an image file (JPG/PNG).");
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+                        const MAX_DIM = 1200; // Mampatkan imej supaya muat dalam pangkalan data
+                        
+                        if (width > height) {
+                            if (width > MAX_DIM) {
+                                height *= MAX_DIM / width;
+                                width = MAX_DIM;
+                            }
+                        } else {
+                            if (height > MAX_DIM) {
+                                width *= MAX_DIM / height;
+                                height = MAX_DIM;
+                            }
+                        }
+                        
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.6); // Kualiti JPEG 60%
+                        
+                        setPreviewImage(compressedBase64);
+                        simulateScanningProcess(compressedBase64);
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            };
+
+            const simulateScanningProcess = (base64) => {
+                setScanStatus('Aligning document...');
+                setTimeout(() => setScanStatus('Extracting handwriting...'), 1000);
+                setTimeout(() => setScanStatus('Analyzing Part 6 Rubric...'), 2500);
+                setTimeout(() => {
+                    onScanComplete(base64);
+                }, 4000); 
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col items-center justify-center max-w-5xl mx-auto">
+                    {!previewImage ? (
+                        <>
+                            <div className="text-center mb-8">
+                                <span className="inline-block px-4 py-1 bg-brand-accent text-white font-black rounded-full text-sm mb-4 transform -rotate-2 shadow-sm">FOCUS: PART 6 WRITING ✍️</span>
+                                <h1 className="text-4xl font-extrabold text-brand-navy mb-3">Upload Student Paper</h1>
+                                <p className="text-gray-500 font-medium text-lg">Upload Question 34 (Guided Writing) for instant AI rubric grading.</p>
+                            </div>
+
+                            <div 
+                                className={`w-full max-w-2xl border-4 border-dashed rounded-[3rem] p-12 transition-all duration-300 flex flex-col items-center justify-center bg-white shadow-sm ${isDragging ? 'border-brand-primary bg-brand-sky scale-105' : 'border-gray-200 hover:border-brand-primary/50'}`}
+                                onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                                onDragLeave={() => setIsDragging(false)}
+                                onDrop={e => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); }}
+                            >
+                                <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center mb-6 shadow-inner">
+                                    <i className="fas fa-camera text-4xl text-brand-primary"></i>
+                                </div>
+                                <h3 className="text-2xl font-extrabold text-brand-navy mb-2">Drag & Drop Paper Here</h3>
+                                <p className="text-gray-400 font-bold mb-8">or tap to select from your device</p>
+                                <label className="bg-brand-primary text-white px-10 py-4 rounded-2xl font-extrabold hover:bg-blue-600 transition cursor-pointer shadow-[0_4px_0_rgb(37,99,235)] hover:shadow-[0_2px_0_rgb(37,99,235)] hover:translate-y-[2px] active:shadow-none active:translate-y-[4px]">
+                                    <i className="fas fa-upload mr-2"></i> Browse Files
+                                    <input type="file" className="hidden" accept="image/*" onChange={e => handleFile(e.target.files[0])} />
+                                </label>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="w-full max-w-3xl flex flex-col items-center animate-pulse-glow">
+                            <h2 className="text-2xl font-extrabold text-brand-navy mb-4"><i className="fas fa-robot text-brand-primary mr-2"></i> {scanStatus}</h2>
+                            <div className="relative rounded-xl overflow-hidden shadow-2xl border-4 border-brand-primary/30">
+                                <img src={previewImage} alt="Scanning" className="w-full h-auto opacity-75 grayscale-[20%]" />
+                                <div className="absolute inset-0 bg-[linear-gradient(rgba(14,165,233,0.1)_1px,transparent_1px),linear-gradient(90deg,rgba(14,165,233,0.1)_1px,transparent_1px)] bg-[size:20px_20px]"></div>
+                                <div className="laser-line animate-scan-line"></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        async function analyzePart6WithAI(base64Image) {
+            try {
+                // The Canvas environment automatically injects the API key at runtime when left empty.
+                // DO NOT add validation checks here, or it will block the live call.
+                const apiKey = ""; 
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+
+                // Extract image safely
+                let mimeType = "image/jpeg";
+                let rawBase64 = base64Image;
+                
+                if (base64Image.includes(',')) {
+                    const parts = base64Image.split(',');
+                    const match = parts[0].match(/:(.*?);/);
+                    if (match && match.length > 1) {
+                        mimeType = match[1];
+                    }
+                    rawBase64 = parts[1];
+                }
+
+                const prompt = `You are a lenient and encouraging primary school English teacher in Malaysia marking a Year 4 MPT4 examination paper (Part 6: Guided Writing).
+                Read the uploaded handwritten answer for Question 34.
+                The task is: Write to Faizul that you are going to teach him a sport, why it is a good sport to learn, and where/when you can teach him (40-50 words).
+
+                Evaluate based on this rubric (0-3 marks each):
+                - Idea: Relevance to the task.
+                - Structural Control: Paragraphing and sentence formation.
+                - Vocabulary: Suitability and spelling.
+                - Punctuation: Use of caps, full stops, commas.
+                - Grammar: Accuracy of simple forms and conjunctions.
+                Be lenient! These are 10-year-olds.
+
+                Return a strictly formatted JSON object with EXACTLY this structure:
+                {
+                  "studentInfo": { "name": "extracted name or Unknown", "class": "extracted class or Unknown" },
+                  "part6_rubric": { "Idea": 0, "Structural Control": 0, "Vocabulary": 0, "Punctuation": 0, "Grammar": 0, "feedback": "short encouraging feedback" },
+                  "extractedText": "transcribe the handwriting exactly",
+                  "annotations": [
+                    { "symbol": "✓", "reason": "Good sentence", "x": 50, "y": 50 }
+                  ]
+                }
+                
+                Use these exact symbols from the official marking guide for annotations:
+                - ✓ (Correct/Merit)
+                - ^ (Missing word)
+                - Sp (Spelling error)
+                - O (Punctuation error)
+                - V (Vocabulary / Inappropriate word)
+                - ___ (Structure error)
+                - ~~~ (Grammar error)
+                - R (Repetition)
+                - ? (Unclear meaning)
+                - // (Total distortion / blatant irrelevancy)
+                - Rd (Redundancy)
+                - [ ] (Irrelevancy / general statement)
+                - ( ) (Chunking)
+                - ↔ (Word order / Transpose)
+                - / (Separate words)
+                
+                Estimate x and y coordinates (0-100 percentages) where the symbol should go based on where the error/merit is in the image.`;
+
+                const payload = {
+                    contents: [{
+                        role: "user",
+                        parts: [
+                            { text: prompt },
+                            { inlineData: { mimeType: mimeType, data: rawBase64 } }
+                        ]
+                    }],
+                    generationConfig: {
+                        responseMimeType: "application/json"
+                        // Schema removed to prevent strict API-side validation rejections
+                    }
+                };
+
+                const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const result = await response.json();
+                
+                if (result.error) {
+                    console.error("API Error:", result.error);
+                    throw new Error(result.error.message);
+                }
+                
+                if (result.candidates && result.candidates.length > 0) {
+                    let jsonString = result.candidates[0].content.parts[0].text;
+                    // Strip markdown formatting if the model wrapped it
+                    jsonString = jsonString.replace(/```json/gi, '').replace(/```/g, '').trim();
+                    return JSON.parse(jsonString);
+                } else {
+                    console.error("AI Response error:", result);
+                    throw new Error("No valid AI response generated.");
+                }
+
+            } catch (error) {
+                console.error("AI Analysis Error:", error);
+                return {
+                    studentInfo: { name: "Manual Entry Required", class: "Unknown" },
+                    part6_rubric: { Idea: 0, "Structural Control": 0, Vocabulary: 0, Punctuation: 0, Grammar: 0, feedback: "Ralat pemprosesan: " + error.message },
+                    extractedText: "Failed to read handwriting due to system error. Reason: " + error.message,
+                    annotations: []
+                };
+            }
+        }
+
+        function ReviewWorkspace({ imageSrc, onComplete, onCancel }) {
+            const [aiData, setAiData] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [marks, setMarks] = useState({});
+            const [studentInfo, setStudentInfo] = useState({ name: '', class: '' });
+            const [annotations, setAnnotations] = useState([]);
+            const [activeTool, setActiveTool] = useState(null);
+            const imgRef = useRef(null);
+
+            useEffect(() => {
+                let isMounted = true;
+                setLoading(true);
+                analyzePart6WithAI(imageSrc).then(data => {
+                    if(!isMounted) return;
+                    setAiData(data);
+                    setStudentInfo(data.studentInfo || { name: 'Unknown', class: 'Unknown' });
+                    
+                    let initialMarks = {};
+                    EXAM_SCHEME.parts[0].rubric.forEach(r => {
+                        initialMarks[`p6_${r}`] = data.part6_rubric ? data.part6_rubric[r] || 0 : 0;
+                    });
+                    setMarks(initialMarks);
+                    
+                    if (data.annotations && Array.isArray(data.annotations)) {
+                        const aiAnns = data.annotations.map((ann, idx) => ({
+                            id: `ai-${Date.now()}-${idx}`, x: ann.x || 50, y: ann.y || 50,
+                            symbol: ann.symbol, color: ann.symbol === '✓' ? 'symbol-correct' : 'red-pen', reason: ann.reason
+                        }));
+                        setAnnotations(aiAnns);
+                    }
+                    setLoading(false);
+                });
+                return () => { isMounted = false; };
+            }, [imageSrc]);
+
+            const handleImageClick = (e) => {
+                if (!activeTool || !imgRef.current) return;
+                const rect = imgRef.current.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * 100;
+                const y = ((e.clientY - rect.top) / rect.height) * 100;
+                setAnnotations([...annotations, { id: Date.now(), x, y, symbol: activeTool.symbol, color: activeTool.color }]);
+                setActiveTool(null);
+            };
+
+            const removeAnnotation = (id, e) => {
+                e.stopPropagation();
+                setAnnotations(annotations.filter(a => a.id !== id));
+            };
+
+            const handleMarkChange = (key, val) => {
+                const num = parseInt(val) || 0;
+                if (num >= 0 && num <= 3) { setMarks(prev => ({ ...prev, [key]: num })); }
+            };
+
+            const calculateTotal = () => Object.values(marks).reduce((sum, val) => sum + val, 0);
+
+            const handleConfirm = () => {
+                onComplete({ 
+                    id: Date.now(), studentName: studentInfo.name || 'Unknown', className: studentInfo.class || 'Unknown',
+                    totalMarks: calculateTotal(), status: "Verified", date: new Date().toLocaleDateString(),
+                    imageSrc: imageSrc, annotations: annotations
+                });
+            };
+
+            if (loading) {
+                return (
+                    <div className="h-full flex flex-col items-center justify-center bg-dots">
+                        <div className="bg-white p-10 rounded-[3rem] shadow-xl flex flex-col items-center text-center border-4 border-white ring-4 ring-brand-sky">
+                            <div className="w-24 h-24 bg-brand-secondary/20 rounded-full flex items-center justify-center mb-6 animate-bounce">
+                                <i className="fas fa-magic text-5xl text-brand-secondary"></i>
+                            </div>
+                            <h2 className="text-3xl font-extrabold text-brand-navy mb-2">Grading Part 6...</h2>
+                            <p className="text-brand-primary font-bold text-lg">Evaluating Idea, Grammar, and Vocabulary.</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="h-full flex flex-col md:flex-row bg-gray-50">
+                    <div className="flex-1 overflow-y-auto border-r-2 border-gray-200 flex flex-col relative bg-gray-100">
+                        {/* Expanded Toolbar */}
+                        <div className="sticky top-0 bg-white/90 backdrop-blur-md shadow-sm z-20 p-3 flex flex-wrap gap-2 justify-center border-b border-gray-200 items-center">
+                            {MARKING_SYMBOLS.map(tool => (
+                                <button key={tool.symbol} 
+                                    onClick={() => setActiveTool(activeTool === tool ? null : tool)}
+                                    className={`h-10 px-3 rounded-xl flex items-center justify-center font-black shadow-sm transition-transform hover:scale-105
+                                        ${activeTool === tool ? 'bg-red-50 text-red-600 ring-2 ring-red-400' : 'bg-white text-gray-700 border-2 border-gray-200 hover:border-red-300 hover:text-red-500'}`}
+                                    title={tool.name}
+                                >
+                                    <span className={tool.color === 'symbol-correct' ? 'text-green-600' : 'text-red-600 font-caveat text-xl'}>{tool.symbol}</span>
+                                </button>
+                            ))}
+                            <div className="w-px h-8 bg-gray-300 mx-2 rounded"></div>
+                            <span className="text-xs font-bold text-gray-500 self-center bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200"><i className="fas fa-mouse-pointer mr-1"></i> Click tool, then click paper</span>
+                        </div>
+                        
+                        <div className="p-6 flex justify-center min-h-full">
+                            <div className="scan-container bg-white shadow-xl rounded-xl overflow-hidden border-2 border-gray-200 cursor-crosshair" onClick={handleImageClick}>
+                                <img ref={imgRef} src={imageSrc} alt="Scanned Paper" className="scan-image" />
+                                {annotations.map(ann => (
+                                    <div key={ann.id} 
+                                         className={`annotation-marker red-pen ${ann.color === 'symbol-correct' ? 'text-green-600 !font-sans' : ''}`} 
+                                         style={{ left: `${ann.x}%`, top: `${ann.y}%` }} 
+                                         onClick={(e) => removeAnnotation(ann.id, e)}
+                                         title={ann.reason || "Click to remove"}
+                                    >
+                                        {ann.symbol}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    { }
+                    <div className="w-full md:w-[450px] bg-white flex flex-col h-full shadow-2xl z-10">
+                        <div className="p-6 bg-brand-primary text-white relative overflow-hidden shadow-md">
+                            <div className="absolute -right-10 -top-10 w-32 h-32 bg-white/20 rounded-full blur-2xl"></div>
+                            <div className="flex justify-between items-center mb-4 relative z-10">
+                                <h2 className="text-2xl font-extrabold tracking-tight">Review Part 6</h2>
+                                <span className="bg-white text-brand-primary text-xs font-black px-3 py-1 rounded-full shadow-sm">Max 15</span>
+                            </div>
+                            
+                            {}
+                            <div className="space-y-3 relative z-10">
+                                <div className="bg-white/20 p-3 rounded-2xl backdrop-blur-sm flex items-center shadow-inner border border-white/30">
+                                    <i className="fas fa-user-graduate text-white/80 mr-3"></i>
+                                    <input type="text" value={studentInfo.name} onChange={e => setStudentInfo({...studentInfo, name: e.target.value})} className="bg-transparent text-white font-bold text-lg placeholder-white/70 focus:outline-none w-full" placeholder="Student's Name" />
+                                </div>
+                                
+                                <div className="bg-white/20 p-3 rounded-2xl backdrop-blur-sm flex items-center shadow-inner border border-white/30">
+                                    <i className="fas fa-chalkboard text-white/80 mr-3"></i>
+                                    <select 
+                                        value={studentInfo.class} 
+                                        onChange={e => setStudentInfo({...studentInfo, class: e.target.value})} 
+                                        className="bg-transparent text-white font-bold text-lg focus:outline-none w-full appearance-none cursor-pointer"
+                                    >
+                                        <option value="Unknown" className="text-gray-800">Select Class...</option>
+                                        <option value="4 MMU" className="text-gray-800">4 MMU</option>
+                                        <option value="4 UKM" className="text-gray-800">4 UKM</option>
+                                        <option value="4 UM" className="text-gray-800">4 UM</option>
+                                        <option value="4 UPM" className="text-gray-800">4 UPM</option>
+                                        <option value="4 USM" className="text-gray-800">4 USM</option>
+                                        <option value="4 UTM" className="text-gray-800">4 UTM</option>
+                                    </select>
+                                    <i className="fas fa-chevron-down text-white/70 text-sm ml-2"></i>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-paper">
+                            {aiData?.extractedText && (
+                                <div className="bg-brand-sky/50 p-4 rounded-2xl border border-brand-sky mb-6">
+                                    <p className="text-xs font-bold text-brand-primary uppercase mb-1"><i className="fas fa-eye mr-1"></i> AI Read:</p>
+                                    <p className="text-sm text-gray-700 italic font-medium">"{aiData.extractedText}"</p>
+                                </div>
+                            )}
+
+                            {/* Permanently Visible Marking Symbols Guide */}
+                            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 shadow-sm">
+                                <h3 className="text-xs font-extrabold text-amber-800 uppercase tracking-wider mb-3"><i className="fas fa-pen-nib mr-1"></i> Marking Symbols Guide</h3>
+                                <div className="grid grid-cols-2 gap-y-2 gap-x-2 text-[10px]">
+                                    {MARKING_SYMBOLS.map(s => (
+                                        <div key={s.name} className="flex items-center space-x-1">
+                                            <span className={`w-5 text-center font-bold ${s.color === 'symbol-correct' ? 'text-green-600' : 'text-red-600 font-caveat text-base'}`}>{s.symbol}</span>
+                                            <span className="text-gray-700 font-medium truncate" title={s.name}>{s.name}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <h3 className="font-extrabold text-brand-navy text-lg mb-2">Rubric Breakdown</h3>
+                            {EXAM_SCHEME.parts[0].rubric.map(r => (
+                                <div key={r} className="bg-white border-2 border-gray-100 rounded-2xl p-4 flex items-center justify-between shadow-sm hover:border-brand-sky transition-colors">
+                                    <div>
+                                        <span className="font-extrabold text-gray-700 block">{r}</span>
+                                        <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-md">Scale: 0 - 3</span>
+                                    </div>
+                                    <div className="flex items-center space-x-3">
+                                        <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-brand-sky text-brand-primary shadow-sm">AI: {aiData?.part6_rubric?.[r] ?? '-'}</span>
+                                        <input type="number" min="0" max="3" value={marks[`p6_${r}`] !== undefined ? marks[`p6_${r}`] : ''} onChange={e => handleMarkChange(`p6_${r}`, e.target.value)}
+                                                className="w-14 h-12 text-center font-black text-xl bg-gray-50 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-brand-sky focus:border-brand-primary focus:bg-white outline-none transition-all shadow-inner" />
+                                    </div>
+                                </div>
+                            ))}
+
+                            <div className="mt-6 bg-brand-secondary/10 border-2 border-brand-secondary/30 p-4 rounded-2xl">
+                                <p className="text-xs font-bold text-amber-600 uppercase mb-1"><i className="fas fa-lightbulb mr-1"></i> AI Feedback:</p>
+                                <p className="text-sm text-gray-700 font-medium">{aiData?.part6_rubric?.feedback || "No feedback provided."}</p>
+                            </div>
+                        </div>
+
+                        {}
+                        <div className="p-6 border-t-2 border-gray-100 bg-white shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)]">
+                            <div className="flex justify-between items-center mb-6 bg-gray-50 p-4 rounded-2xl border-2 border-gray-100">
+                                <div>
+                                    <span className="text-gray-500 font-extrabold uppercase tracking-wider text-sm block mb-1">Total Part 6</span>
+                                    {(() => {
+                                        const cefr = getCEFRLevel(calculateTotal());
+                                        return (
+                                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-black ${cefr.color} shadow-sm`}>
+                                                CEFR: {cefr.level} ({cefr.desc})
+                                            </span>
+                                        );
+                                    })()}
+                                </div>
+                                <div className="text-right">
+                                    <span className="text-4xl font-black text-brand-primary">{calculateTotal()}</span>
+                                    <span className="text-xl text-gray-400 font-bold ml-1">/ 15</span>
+                                </div>
+                            </div>
+                            <div className="flex space-x-4">
+                                <button onClick={onCancel} className="flex-1 py-4 bg-white border-2 border-gray-200 text-gray-600 rounded-2xl font-bold hover:bg-gray-50 transition">Cancel</button>
+                                <button onClick={handleConfirm} className="flex-[2] py-4 bg-brand-primary text-white rounded-2xl font-extrabold hover:bg-blue-600 transition shadow-[0_4px_0_rgb(37,99,235)] hover:shadow-[0_2px_0_rgb(37,99,235)] hover:translate-y-[2px] active:shadow-none active:translate-y-[4px] flex justify-center items-center space-x-2">
+                                    <i className="fas fa-check-circle text-lg"></i>
+                                    <span>Verify & Save</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function DashboardView({ records }) {
+            const [selectedRecord, setSelectedRecord] = useState(null);
+
+            const exportToCSV = () => {
+                if (records.length === 0) {
+                    alert("No records to export yet.");
+                    return;
+                }
+                
+                // 1. Define headers
+                const headers = ["Student Name", "Class", "Date", "Total Marks", "CEFR Level"];
+                
+                // 2. Format rows and escape any commas or quotes safely
+                const escapeCsv = (str) => `"${String(str || '').replace(/"/g, '""')}"`;
+                
+                const rows = records.map(r => {
+                    const cefr = getCEFRLevel(r.totalMarks);
+                    return `${escapeCsv(r.studentName)},${escapeCsv(r.className)},${escapeCsv(r.date)},${r.totalMarks},${escapeCsv(cefr.level)}`;
+                });
+                
+                // 3. Combine headers and rows
+                const csvContent = [headers.join(","), ...rows].join("\n");
+                
+                // 4. Create a Blob for robust downloading
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                
+                // 5. Trigger the download
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `MPT4_Marks_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                
+                // 6. Clean up
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            };
+
+            return (
+                <div className="p-8 max-w-5xl mx-auto relative">
+                    {selectedRecord && (
+                        <div className="fixed inset-0 bg-black/60 z-50 flex justify-center items-center p-4 backdrop-blur-sm">
+                            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+                                <div className="p-4 bg-brand-navy text-white flex justify-between items-center">
+                                    <div>
+                                        <h3 className="font-extrabold text-xl">{selectedRecord.studentName}</h3>
+                                        <p className="text-brand-sky text-sm">{selectedRecord.className} • Part 6 • {selectedRecord.totalMarks}/15 Marks</p>
+                                    </div>
+                                    <button onClick={() => setSelectedRecord(null)} className="w-10 h-10 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center transition">
+                                        <i className="fas fa-times text-xl"></i>
+                                    </button>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-6 bg-gray-100 flex justify-center">
+                                    <div className="scan-container bg-white shadow-lg border border-gray-200 relative">
+                                        <img src={selectedRecord.imageSrc} alt="Marked Paper" className="scan-image" />
+                                        {selectedRecord.annotations.map(ann => (
+                                            <div key={ann.id} 
+                                                className={`annotation-marker red-pen ${ann.color === 'symbol-correct' ? 'text-green-600 !font-sans' : ''}`} 
+                                                style={{ left: `${ann.x}%`, top: `${ann.y}%`, cursor: 'default' }} 
+                                            >
+                                                {ann.symbol}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="p-4 bg-gray-50 border-t flex justify-end">
+                                    <button className="bg-brand-primary text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-600 shadow-sm">
+                                        <i className="fas fa-download mr-2"></i> Close
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {}
+                    <div className="flex items-center justify-between mb-8">
+                        <div>
+                            <h1 className="text-3xl font-extrabold text-brand-navy">Part 6 Verified Results</h1>
+                            <p className="text-gray-500 font-medium mt-1">Recent Guided Writing assessments.</p>
+                        </div>
+                        <div className="flex space-x-3">
+                            <button onClick={exportToCSV} className="bg-green-600 text-white font-bold px-4 py-2 rounded-xl border border-green-700 hover:bg-green-700 shadow-sm flex items-center transition-transform hover:scale-105">
+                                <i className="fas fa-file-csv mr-2"></i> Export to Sheets
+                            </button>
+                            <div className="bg-brand-sky text-brand-primary font-bold px-4 py-2 rounded-xl border border-blue-100 flex items-center">
+                                Total Scanned: {records.length}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-3xl shadow-sm border-2 border-gray-100 overflow-hidden">
+                        {records.length > 0 ? (
+                            <table className="w-full text-left">
+                                <thead className="bg-gray-50 border-b-2 border-gray-100">
+                                    <tr>
+                                        <th className="p-4 font-extrabold text-gray-500 text-sm uppercase tracking-wider">Student</th>
+                                        <th className="p-4 font-extrabold text-gray-500 text-sm uppercase tracking-wider">Class</th>
+                                        <th className="p-4 font-extrabold text-gray-500 text-sm uppercase tracking-wider text-center">CEFR</th>
+                                        <th className="p-4 font-extrabold text-gray-500 text-sm uppercase tracking-wider text-right">Part 6 Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {records.map(r => {
+                                        const cefr = getCEFRLevel(r.totalMarks);
+                                        return (
+                                        <tr key={r.id} className="hover:bg-brand-sky/20 transition-colors">
+                                            <td className="p-4 font-bold text-brand-navy">{r.studentName}</td>
+                                            <td className="p-4 font-medium text-gray-600">{r.className}</td>
+                                            <td className="p-4 text-center">
+                                                <span className={`inline-flex items-center justify-center font-bold px-2.5 py-1 rounded-full text-xs ${cefr.color}`}>
+                                                    {cefr.level}
+                                                </span>
+                                            </td>
+                                            <td className="p-4 text-right">
+                                                <span className="inline-flex items-center justify-center bg-green-100 text-green-700 font-black px-3 py-1 rounded-full mr-4">
+                                                    {r.totalMarks} / 15
+                                                </span>
+                                                {r.imageSrc ? (
+                                                    <button onClick={() => setSelectedRecord(r)} className="text-brand-primary hover:text-blue-700 font-bold text-sm bg-blue-50 px-3 py-1 rounded-lg">
+                                                        View Paper
+                                                    </button>
+                                                ) : (
+                                                    <span className="text-gray-400 text-xs italic bg-gray-50 px-3 py-1 rounded-lg">Image Archived</span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    )})}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <div className="p-12 text-center text-gray-400">
+                                <i className="fas fa-inbox text-5xl mb-4 text-gray-200"></i>
+                                <p className="font-bold text-lg">No papers graded yet.</p>
+                                <p className="text-sm">Go to 'Scan Part 6' to get started.</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function LoginView({ onLogin }) {
+            const [isSignUp, setIsSignUp] = useState(false);
+            const [name, setName] = useState('');
+            const [school, setSchool] = useState('');
+            const [password, setPassword] = useState('');
+            
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (isSignUp) {
+                    if (name.trim() && school.trim() && password.trim()) {
+                        onLogin({ name, school, role: "English Teacher" });
+                    }
+                } else {
+                    if (name.trim() && password.trim()) {
+                        // Untuk log masuk, kita gunakan SK Taman Tawau sebagai lalai jika tiada (fallback)
+                        onLogin({ name, school: school || "SK Taman Tawau", role: "English Teacher" });
+                    }
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-dots flex items-center justify-center p-4 font-sans">
+                    <div className="bg-white p-8 rounded-[3rem] shadow-2xl w-full max-w-md text-center border-4 border-brand-sky relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-32 bg-brand-primary rounded-b-[50%] scale-110 -translate-y-10 z-0"></div>
+                        
+                        {/* Content */}
+                        <div className="relative z-10 flex flex-col items-center">
+                            <div className="bg-white p-3 rounded-full shadow-lg mb-4 border-4 border-brand-sky">
+                                <img 
+                                    src="https://iili.io/nVTduKg.png" 
+                                    alt="Logo SK Taman Tawau" 
+                                    className="w-20 h-20 object-contain"
+                                />
+                            </div>
+                            <h1 className="text-3xl font-extrabold text-brand-navy mb-1">MPT4 AI Marker</h1>
+                            <p className="text-gray-500 font-bold mb-6 text-sm">Smart Marking System for Teachers</p>
+                            
+                            {/* Toggle Switch */}
+                            <div className="w-full bg-gray-50 p-1 rounded-2xl flex mb-6 shadow-inner border border-gray-100">
+                                <button type="button" onClick={() => setIsSignUp(false)} className={`flex-1 py-2.5 rounded-xl font-extrabold text-sm transition-all ${!isSignUp ? 'bg-white text-brand-primary shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>Log In</button>
+                                <button type="button" onClick={() => setIsSignUp(true)} className={`flex-1 py-2.5 rounded-xl font-extrabold text-sm transition-all ${isSignUp ? 'bg-white text-brand-primary shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>Sign Up</button>
+                            </div>
+
+                            <form onSubmit={handleSubmit} className="w-full text-left space-y-4">
+                                <div>
+                                    <label className="block text-brand-navy font-extrabold mb-1 ml-2 text-sm">{isSignUp ? "Full Name" : "Teacher's Name"}</label>
+                                    <div className="relative">
+                                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                                            <i className="fas fa-user-circle text-brand-primary text-lg"></i>
+                                        </div>
+                                        <input 
+                                            type="text" 
+                                            value={name}
+                                            onChange={(e) => setName(e.target.value)}
+                                            className="w-full pl-11 pr-4 py-3.5 rounded-2xl border-2 border-gray-200 focus:border-brand-primary focus:ring-4 focus:ring-brand-sky outline-none font-bold text-gray-700 transition-all shadow-inner"
+                                            placeholder="e.g. Teacher Amirah"
+                                            required
+                                        />
+                                    </div>
+                                </div>
+
+                                {isSignUp && (
+                                    <div>
+                                        <label className="block text-brand-navy font-extrabold mb-1 ml-2 text-sm">School Name</label>
+                                        <div className="relative">
+                                            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                                                <i className="fas fa-school text-brand-primary text-lg"></i>
+                                            </div>
+                                            <input 
+                                                type="text" 
+                                                value={school}
+                                                onChange={(e) => setSchool(e.target.value)}
+                                                className="w-full pl-11 pr-4 py-3.5 rounded-2xl border-2 border-gray-200 focus:border-brand-primary focus:ring-4 focus:ring-brand-sky outline-none font-bold text-gray-700 transition-all shadow-inner"
+                                                placeholder="e.g. SK Taman Tawau"
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div>
+                                    <label className="block text-brand-navy font-extrabold mb-1 ml-2 text-sm">Password</label>
+                                    <div className="relative">
+                                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                                            <i className="fas fa-lock text-brand-primary text-lg"></i>
+                                        </div>
+                                        <input 
+                                            type="password" 
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            className="w-full pl-11 pr-4 py-3.5 rounded-2xl border-2 border-gray-200 focus:border-brand-primary focus:ring-4 focus:ring-brand-sky outline-none font-bold text-gray-700 transition-all shadow-inner"
+                                            placeholder="••••••••"
+                                            required
+                                        />
+                                    </div>
+                                </div>
+
+                                <button type="submit" className="w-full bg-brand-primary text-white py-4 mt-2 rounded-2xl font-extrabold hover:bg-blue-600 transition shadow-[0_4px_0_rgb(37,99,235)] hover:shadow-[0_2px_0_rgb(37,99,235)] hover:translate-y-[2px] active:shadow-none active:translate-y-[4px] text-lg flex items-center justify-center space-x-2">
+                                    <span>{isSignUp ? "Create Account" : "Log In"}</span>
+                                    <i className="fas fa-arrow-right"></i>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [activeTab, setActiveTab] = useState('scan');
+            const [currentScan, setCurrentScan] = useState(null);
+            const [records, setRecords] = useState([]);
+            const [userId, setUserId] = useState(null);
+
+            // Connect to Cloud Database Auth
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    if (window.fbAuth && window.fbAuth.currentUser) {
+                        setUserId(window.fbAuth.currentUser.uid);
+                        clearInterval(interval);
+                    }
+                }, 500);
+                return () => clearInterval(interval);
+            }, []);
+
+            // Listen for Cloud Database Updates
+            useEffect(() => {
+                if (!window.fbDb || !userId || !user) return;
+                const colRef = window.fbFunctions.collection(window.fbDb, 'artifacts', window.appId, 'users', userId, 'verified_results');
+                
+                const unsubscribe = window.fbFunctions.onSnapshot(colRef, (snapshot) => {
+                    const fetchedRecords = [];
+                    snapshot.forEach(doc => {
+                        fetchedRecords.push({ id: doc.id, ...doc.data() });
+                    });
+                    fetchedRecords.sort((a, b) => b.id - a.id); // Sort by newest first
+                    setRecords(fetchedRecords);
+                }, (error) => {
+                    console.error("Error syncing with cloud:", error);
+                });
+
+                return () => unsubscribe();
+            }, [userId, user]);
+
+            const handleScanComplete = (base64) => {
+                setCurrentScan(base64);
+                setActiveTab('review');
+            };
+
+            const handleReviewComplete = async (result) => {
+                if (window.fbDb && userId) {
+                    try {
+                        const colRef = window.fbFunctions.collection(window.fbDb, 'artifacts', window.appId, 'users', userId, 'verified_results');
+                        const dataToSave = { ...result };
+                        // Imej kini dikekalkan (tidak dipadam) kerana ia telah dimampatkan
+                        await window.fbFunctions.addDoc(colRef, dataToSave);
+                    } catch (error) {
+                        console.error("Failed to save to cloud:", error);
+                    }
+                } else {
+                    setRecords(prev => [result, ...prev]); // Local fallback
+                }
+
+                setCurrentScan(null);
+                setActiveTab('dashboard');
+            };
+
+            if (!user) {
+                return <LoginView onLogin={(userData) => setUser(userData)} />;
+            }
+
+            return (
+                <Layout user={user} activeTab={activeTab} setActiveTab={setActiveTab} onLogout={() => setUser(null)}>
+                    {activeTab === 'scan' && <ScannerView onScanComplete={handleScanComplete} />}
+                    {activeTab === 'dashboard' && <DashboardView records={records} />}
+                    {activeTab === 'review' && (
+                        currentScan ? 
+                            <ReviewWorkspace imageSrc={currentScan} onComplete={handleReviewComplete} onCancel={() => {setCurrentScan(null); setActiveTab('scan');}} /> 
+                            : 
+                            <div className="h-full flex items-center justify-center p-6 text-center">
+                                <div>
+                                    <i className="fas fa-file-excel text-5xl text-gray-300 mb-4"></i>
+                                    <h2 className="text-xl font-bold text-gray-600 mb-4">No paper currently under review.</h2>
+                                    <button onClick={() => setActiveTab('scan')} className="bg-brand-primary text-white font-bold px-6 py-2 rounded-xl">Go to Scanner</button>
+                                </div>
+                            </div>
+                    )}
+                </Layout>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
